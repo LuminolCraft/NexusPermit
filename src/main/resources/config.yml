@@ -1,0 +1,17 @@
+# NexusPermit 配置
+# 注意：真实密钥只保存在服务端的这份文件里，切勿把填好密钥的配置提交到任何仓库
+
+# Nexus 后端地址（向 Nexus 后端管理员获取；生产环境必须 HTTPS）
+api-base-url: "http://localhost:8787"
+
+# 服务端间共享密钥（向 Nexus 后端管理员获取；留空时插件告警且所有请求被后端 403 拒绝）
+webhook-secret: ""
+
+# 连接超时（秒）
+connect-timeout-seconds: 5
+
+# 请求超时（秒）
+request-timeout-seconds: 10
+
+# /v 命令冷却（秒），0 = 关闭；防止连点浪费验证码的尝试次数
+command-cooldown-seconds: 5
