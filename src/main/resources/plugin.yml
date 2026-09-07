@@ -9,3 +9,6 @@ commands:
   v:
     description: 输入网站给出的验证码，完成 MC 账号绑定核验
     usage: /v <验证码>
+  mcinfo:
+    description: 查看自己的游戏角色名与 UUID（网站绑定用）
+    usage: /mcinfo
