@@ -100,14 +100,14 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         final String playerUuid = player.getUniqueId().toString();
 
         // HTTP 不进主线程（对接指南第 4 节）
-        Bukkit.getScheduler().runTaskAsynchronously(this, () ->
-                verifyAsync(player.getUniqueId(), playerName, playerUuid, code));
+        Bukkit.getScheduler().runTaskAsynchronously(this,
+                () -> verifyAsync(player.getUniqueId(), playerName, playerUuid, code));
         return true;
     }
 
     /** /mcinfo：展示玩家自己的权威身份（与网站绑定所用一致），并附防泄露提醒。 */
     private void sendAccountInfo(Player player) {
-        player.sendMessage("=== 你的游戏账号信息 ===");
+        player.sendMessage("=== 您的游戏账号信息 ===");
         player.sendMessage("角色名: " + player.getName());
         player.sendMessage("UUID: " + player.getUniqueId().toString());
         player.sendMessage("提示：以上信息用于网站账号绑定与核验，请勿泄露给他人，谨防账号被冒绑或盗用。");
@@ -195,10 +195,11 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         });
     }
 
-    /** 200 → 按 verifiedAt 区分已绑定/未核验；404 → 未绑定引导；其他 → 静默降级。 */
+    /** 200 → 按 verifiedAt 区分已绑定/未核验；404 未绑定与其他错误 → 静默降级。 */
     private String interpretLookup(int status, String body) {
         if (status == 404) {
-            return "你的 MC 账号还未绑定网站账号：请到网站个人中心绑定 MC 账号，获取验证码后在大厅输入 /v <验证码>";
+            // 未绑定属正常状态，每次进服都提示会打扰玩家，静默跳过
+            return null;
         }
         if (status != 200) {
             getLogger().warning("进服反查失败，HTTP " + status);
@@ -216,9 +217,9 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         }
         JsonElement verifiedAt = data.get("verifiedAt");
         if (verifiedAt == null || verifiedAt.isJsonNull()) {
-            return "你的账号已绑定但尚未完成核验：请回网站获取验证码，在大厅输入 /v <验证码>";
+            return "您的账号已绑定但尚未完成核验：请回网站获取验证码，在大厅输入 /v <验证码>";
         }
-        return "欢迎回来，你的账号已完成绑定";
+        return "欢迎回来，您的账号已完成绑定";
     }
 
     // ---------- 响应解释与文案映射（文档 2.2/2.3/3.1） ----------
@@ -249,11 +250,11 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         }
         String reason = optString(data, "reason");
         return switch (reason == null ? "" : reason) {
-            case "code_invalid"      -> "验证码无效或已过期，请回网站重新获取";
+            case "code_invalid" -> "验证码无效或已过期，请回网站重新获取";
             case "too_many_attempts" -> "尝试次数过多，请回网站重新发起绑定";
-            case "player_mismatch"   -> "当前玩家与发起绑定的账号不一致";
-            case "already_bound"     -> "该游戏账号已被其他网站用户绑定";
-            default                  -> "核验失败，请稍后再试";
+            case "player_mismatch" -> "当前玩家与发起绑定的账号不一致";
+            case "already_bound" -> "该游戏账号已被其他网站用户绑定";
+            default -> "核验失败，请稍后再试";
         };
     }
 
