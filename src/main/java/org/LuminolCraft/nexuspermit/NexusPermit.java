@@ -44,10 +44,29 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        // YAML 键存在但值为空时 getString 返回 null（默认值只在键缺失时生效），需防御
         baseUrl = getConfig().getString("api-base-url", "http://localhost:8787");
+        if (baseUrl == null || baseUrl.isBlank()) {
+            baseUrl = "http://localhost:8787";
+            getLogger().warning("api-base-url 未配置，已回退为默认值");
+        }
         webhookSecret = getConfig().getString("webhook-secret", "");
+        if (webhookSecret == null) {
+            webhookSecret = "";
+        }
         if (webhookSecret.isBlank()) {
             getLogger().warning("webhook-secret 未配置，所有内部请求将被 403 拒绝");
+        }
+        // 启动时校验地址并去掉尾部斜杠，避免异步线程里 URI.create 抛未捕获异常
+        while (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        try {
+            URI.create(baseUrl);
+        } catch (IllegalArgumentException e) {
+            getLogger().severe("api-base-url 不是合法地址（缺少 http:// 或 https:// 前缀，或含非法字符），插件停用");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
         }
         // 超时与冷却可配置（config.yml），下限兜底防止配 0/负数导致请求失效
         int connectSeconds = Math.max(1, getConfig().getInt("connect-timeout-seconds", 5));
@@ -60,6 +79,14 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         getCommand("v").setExecutor(this);
         getCommand("mcinfo").setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
+    }
+
+    @Override
+    public void onDisable() {
+        // 释放 HttpClient 线程资源，避免 /reload 反复启停时线程滞留
+        if (http != null) {
+            http.close();
+        }
     }
 
     // ---------- /v 验证码核验（文档 3.1） ----------
@@ -235,6 +262,8 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
     private String interpretVerify(int status, String body) {
         JsonObject root = parseEnvelope(body);
         if (status != 200) {
+            // 只记状态码便于排障（如 Secret 配错的 403），不含响应体与 Secret
+            getLogger().warning("核验请求失败，HTTP " + status);
             if (status == 429) {
                 Long resetAt = optDetailsLong(root, "resetAt");
                 if (resetAt != null) {
