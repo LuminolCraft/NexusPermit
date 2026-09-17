@@ -31,5 +31,6 @@ bin/
 
 # 后端内部对接文档（含内部 API 契约，不入库）
 Luminol-Nexus-MC-Plugin-Integration-Guide.md
+NexusPermit-Backend-Handoff.md
 
 

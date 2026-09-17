@@ -77,7 +77,6 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
                 .build();
         requestTimeout = Duration.ofSeconds(requestSeconds);
         getCommand("v").setExecutor(this);
-        getCommand("mcinfo").setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
     }
 
@@ -93,15 +92,6 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        // /mcinfo：查看自身账号信息（纯本地，不联网）
-        if (command.getName().equalsIgnoreCase("mcinfo")) {
-            if (!(sender instanceof Player player)) {
-                sender.sendMessage("只有玩家可以使用 /mcinfo");
-                return true;
-            }
-            sendAccountInfo(player);
-            return true;
-        }
         // /v 验证码核验
         if (!(sender instanceof Player player)) {
             sender.sendMessage("只有玩家可以使用 /v");
@@ -131,14 +121,6 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         Bukkit.getScheduler().runTaskAsynchronously(this,
                 () -> verifyAsync(player.getUniqueId(), playerName, playerUuid, code));
         return true;
-    }
-
-    /** /mcinfo：展示玩家自己的权威身份（与网站绑定所用一致），并附防泄露提醒。 */
-    private void sendAccountInfo(Player player) {
-        player.sendMessage("=== 您的游戏账号信息 ===");
-        player.sendMessage("角色名: " + player.getName());
-        player.sendMessage("UUID: " + player.getUniqueId().toString());
-        player.sendMessage("提示：以上信息用于网站账号绑定与核验，请勿泄露给他人，谨防账号被冒绑或盗用。");
     }
 
     private void verifyAsync(UUID playerId, String playerName, String playerUuid, String code) {
