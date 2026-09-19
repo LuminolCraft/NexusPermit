@@ -61,9 +61,15 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         while (baseUrl.endsWith("/")) {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         }
+        // scheme 必须显式为 http/https：URI.create("api.example.com") 不抛异常但 scheme 为 null，
+        // 真正 build 请求时才抛 IllegalArgumentException（在异步任务中静默失败，玩家零反馈）
+        String scheme = null;
         try {
-            URI.create(baseUrl);
+            scheme = URI.create(baseUrl).getScheme();
         } catch (IllegalArgumentException e) {
+            // 走下方统一的停用分支
+        }
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
             getLogger().severe("api-base-url 不是合法地址（缺少 http:// 或 https:// 前缀，或含非法字符），插件停用");
             getServer().getPluginManager().disablePlugin(this);
             return;
@@ -71,7 +77,8 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         // 超时与冷却可配置（config.yml），下限兜底防止配 0/负数导致请求失效
         int connectSeconds = Math.max(1, getConfig().getInt("connect-timeout-seconds", 5));
         int requestSeconds = Math.max(1, getConfig().getInt("request-timeout-seconds", 10));
-        cooldownMillis = Math.max(0, getConfig().getInt("command-cooldown-seconds", 5)) * 1000L;
+        // /v 冷却默认 6 秒，低于后端 12 次/分钟限流上限；0 = 关闭（此时完全依赖后端 429 + resetAt 兜底）
+        cooldownMillis = Math.max(0, getConfig().getInt("command-cooldown-seconds", 6)) * 1000L;
         http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(connectSeconds))
                 .build();
@@ -129,18 +136,21 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         body.addProperty("playerName", playerName);
         body.addProperty("playerUuid", playerUuid);
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/api/v1/internal/minecraft/verify"))
-                .timeout(requestTimeout)
-                .header("Content-Type", "application/json")
-                .header("X-Webhook-Secret", webhookSecret)
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body), StandardCharsets.UTF_8))
-                .build();
-
         String message;
         try {
+            // build 移入 try：地址异常兜底（正常情况已被启动校验拦截），避免异步任务静默失败
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl + "/api/v1/internal/minecraft/verify"))
+                    .timeout(requestTimeout)
+                    .header("Content-Type", "application/json")
+                    .header("X-Webhook-Secret", webhookSecret)
+                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body), StandardCharsets.UTF_8))
+                    .build();
             HttpResponse<String> resp = http.send(request, HttpResponse.BodyHandlers.ofString());
             message = interpretVerify(resp.statusCode(), resp.body());
+        } catch (IllegalArgumentException e) {
+            getLogger().severe("核验请求构建失败，服务地址配置错误: " + e.getClass().getSimpleName());
+            message = "服务地址配置错误，请联系管理员";
         } catch (IOException e) {
             // 网络层失败可安全重试（code 未被消费），日志只记异常类名，不含 code 与 Secret
             getLogger().warning("核验请求网络异常: " + e.getClass().getSimpleName());
@@ -180,18 +190,21 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
 
     private void lookupAsync(UUID playerId, String name) {
         // 路径参数 URL 编码：离线服可能存在特殊字符角色名（对接指南 5.4）
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/api/v1/internal/minecraft/name/"
-                        + URLEncoder.encode(name, StandardCharsets.UTF_8)))
-                .timeout(Duration.ofSeconds(10))
-                .header("X-Webhook-Secret", webhookSecret)
-                .GET()
-                .build();
-
         String message = null;
         try {
+            // build 移入 try：地址异常兜底（正常情况已被启动校验拦截），避免异步任务静默失败
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl + "/api/v1/internal/minecraft/name/"
+                            + URLEncoder.encode(name, StandardCharsets.UTF_8)))
+                    .timeout(requestTimeout)
+                    .header("X-Webhook-Secret", webhookSecret)
+                    .GET()
+                    .build();
             HttpResponse<String> resp = http.send(request, HttpResponse.BodyHandlers.ofString());
             message = interpretLookup(resp.statusCode(), resp.body());
+        } catch (IllegalArgumentException e) {
+            getLogger().severe("进服反查请求构建失败，服务地址配置错误: " + e.getClass().getSimpleName());
+            message = "服务地址配置错误，请联系管理员";
         } catch (IOException e) {
             getLogger().warning("进服反查网络异常: " + e.getClass().getSimpleName());
         } catch (InterruptedException e) {
@@ -218,7 +231,11 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
             return null;
         }
         if (status != 200) {
-            getLogger().warning("进服反查失败，HTTP " + status);
+            // 补取信封 requestId 便于与后端对账（成功/失败信封都有该字段）
+            JsonObject root = parseEnvelope(body);
+            String requestId = root == null ? null : optString(root, "requestId");
+            getLogger().warning("进服反查失败，HTTP " + status
+                    + (requestId == null ? "" : "，requestId=" + requestId));
             return null;
         }
         JsonObject root = parseEnvelope(body);
@@ -228,7 +245,9 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
         }
         JsonObject data = optObj(root, "data");
         if (data == null) {
-            getLogger().warning("进服反查响应缺少 data");
+            String requestId = optString(root, "requestId");
+            getLogger().warning("进服反查响应缺少 data"
+                    + (requestId == null ? "" : "，requestId=" + requestId));
             return null;
         }
         JsonElement verifiedAt = data.get("verifiedAt");
@@ -244,8 +263,10 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
     private String interpretVerify(int status, String body) {
         JsonObject root = parseEnvelope(body);
         if (status != 200) {
-            // 只记状态码便于排障（如 Secret 配错的 403），不含响应体与 Secret
-            getLogger().warning("核验请求失败，HTTP " + status);
+            // 只记状态码便于排障（如 Secret 配错的 403），不含响应体与 Secret；追加信封 requestId 便于对账
+            String requestId = root == null ? null : optString(root, "requestId");
+            getLogger().warning("核验请求失败，HTTP " + status
+                    + (requestId == null ? "" : "，requestId=" + requestId));
             if (status == 429) {
                 Long resetAt = optDetailsLong(root, "resetAt");
                 if (resetAt != null) {
@@ -253,6 +274,10 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
                             .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
                     return "操作过于频繁，请于 " + time + " 再试";
                 }
+            }
+            if (status == 400) {
+                // VALIDATION_ERROR：请求参数不被后端接受，与「服务不可用」区分开便于定位配置问题
+                return "请求参数不被后端接受（检查配置与玩家名格式）";
             }
             return "绑定服务暂时不可用（" + status + "），请联系管理员";
         }
