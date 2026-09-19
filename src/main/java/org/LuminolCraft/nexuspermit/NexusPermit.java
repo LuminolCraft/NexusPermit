@@ -74,13 +74,25 @@ public final class NexusPermit extends JavaPlugin implements CommandExecutor, Li
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
+        // 非本机地址却用明文 http：Secret 会明文上行（config.yml 注释已要求生产必须 HTTPS），
+        // 且生产域名通常被强制跳转。不阻断启动（内网/反代场景合法），只明确告警便于排障。
+        final String host = URI.create(baseUrl).getHost();
+        final boolean localHost =
+                host == null || "localhost".equalsIgnoreCase(host) || "127.0.0.1".equals(host) || "::1".equals(host) || "[::1]".equals(host);
+        if ("http".equalsIgnoreCase(scheme) && !localHost) {
+            getLogger().warning("api-base-url 是非本机 http 明文地址：Secret 将明文传输，且依赖服务端跳转；生产环境请改用 https://");
+        }
         // 超时与冷却可配置（config.yml），下限兜底防止配 0/负数导致请求失效
         int connectSeconds = Math.max(1, getConfig().getInt("connect-timeout-seconds", 5));
         int requestSeconds = Math.max(1, getConfig().getInt("request-timeout-seconds", 10));
         // /v 冷却默认 6 秒，低于后端 12 次/分钟限流上限；0 = 关闭（此时完全依赖后端 429 + resetAt 兜底）
         cooldownMillis = Math.max(0, getConfig().getInt("command-cooldown-seconds", 6)) * 1000L;
+        // 跟随跳转：HttpClient 默认 NEVER，301/302（如 Cloudflare 强制 HTTPS）会被当成
+        // 失败响应，玩家只看到「服务暂时不可用（301）」而日志无线索。用 NORMAL 而非 ALWAYS：
+        // 禁止 https → http 的降级跳转，防 Secret 明文回落。
         http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(connectSeconds))
+                .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
         requestTimeout = Duration.ofSeconds(requestSeconds);
         getCommand("v").setExecutor(this);
